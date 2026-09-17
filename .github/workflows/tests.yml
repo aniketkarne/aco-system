@@ -1,0 +1,61 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  pytest:
+    name: pytest (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.10", "3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Run tests
+        env:
+          # The required GitHub fields are exercised by tests/test_settings.py;
+          # values here are placeholders so Settings() loads cleanly.
+          GITHUB_TOKEN: test-token
+          GITHUB_OWNER: test-owner
+          GITHUB_REPO: test-repo
+        run: pytest -v --tb=short
+
+  lint:
+    name: ruff
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install ruff
+        run: pip install ruff
+
+      - name: ruff check
+        run: ruff check agents/ core/ config/ integrations/ tests/
+
+      - name: ruff format --check (advisory only)
+        # The repo isn't ruff-formatted repo-wide, so this is informational:
+        # uncomment the `&& exit 1` below once `ruff format` has been run.
+        run: ruff format --check agents/ core/ config/ integrations/ tests/ || true

@@ -33,6 +33,3 @@ tenacity==8.2.3
 pytest==7.4.3
 pytest-asyncio==0.23.2
 pytest-cov==4.1.0
-
-# Browser Automation (for app releases)
-playwright==1.40.0

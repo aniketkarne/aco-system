@@ -34,7 +34,7 @@ cp .env.example .env
 cd frontend && npm run dev
 
 # In another terminal, run the agents
-python run_all_agents_final.py
+python run_agents.py
 ```
 
 ## Project Structure
@@ -85,7 +85,7 @@ aco-system/
 │   ├── components/     # UI components
 │   └── lib/            # Database queries + types
 ├── integrations/        # GitHub sync and other integrations
-└── run_all_agents_final.py  # Main entry point
+└── run_agents.py          # Main entry point
 ```
 
 ## Adding a New Agent
@@ -118,7 +118,7 @@ class NewAgent(BaseAgent):
         pass
 ```
 
-3. **Register the agent** in `run_all_agents_final.py`.
+3. **Register the agent** in `run_agents.py`.
 
 ## Adding Rules
 

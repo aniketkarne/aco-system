@@ -3,7 +3,10 @@
 Initialize ACO database and create an example story.
 """
 import sys
-sys.path.insert(0, '/home/ubuntu/.openclaw/workspace/aco-system')
+from pathlib import Path
+
+# Allow running from any cwd: add the directory containing this script.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from core.database import init_database, get_session, Story, StoryStatus
 from config.settings import get_settings

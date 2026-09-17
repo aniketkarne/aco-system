@@ -101,7 +101,7 @@ cd frontend && npm run dev
 # → http://localhost:3001
 
 # 6. Run the agent pipeline
-python run_all_agents_final.py
+python run_agents.py
 ```
 
 That's it. The dashboard shows the live pipeline — Kanban board, agent status, story timeline, and a streaming event feed.
@@ -225,7 +225,7 @@ aco-system/
 ├── frontend/              # Dashboard (Next.js 15 + Tailwind CSS)
 │   ├── app/api/           # API routes (stories, agents, feed, alerts)
 │   └── components/        # Kanban, timeline, live feed, alerts
-└── run_all_agents_final.py  # Main entry point
+└── run_agents.py            # Main entry point
 ```
 
 ---

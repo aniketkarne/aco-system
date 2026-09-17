@@ -4,6 +4,18 @@ All notable changes to ACO System will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [Unreleased]
+
+### Fixed
+- Quick Start (`python run_all_agents_final.py`) referenced a non-existent entry point; every doc + script + Makefile now points to the actual `run_agents.py`. The README's six-step install now actually starts the pipeline.
+- `make db-reset` called `init_db()` which doesn't exist; now calls the real `init_database()` and creates the `data/` directory first.
+- `init_story.py` had a hardcoded absolute path (`/home/ubuntu/.openclaw/workspace/aco-system`) that crashed for every non-developer-machine user; replaced with a `__file__`-relative `sys.path.insert` so the script runs from any cwd.
+- `pip install playwright==1.40.0` is in `requirements.txt` but never imported anywhere; removed the unused dependency.
+
+### Added
+- `tests/` directory with a `conftest.py` (adds repo root to `sys.path`) and three smoke-test files: `test_database.py` (ORM CRUD, enum values, cascade), `test_settings.py` (required GitHub fields, default values, singleton), `test_validation_hooks.py` (secrets-detection gate is the headline Architect feature — covers positive + negative case).
+- `.github/workflows/tests.yml` running `pytest` on Python 3.10 / 3.11 / 3.12 plus a `ruff check` advisory job. CI now fails a PR that breaks the database / settings / hooks smoke tests.
+
 ## [0.1.0] - 2025-03-30
 
 ### Added

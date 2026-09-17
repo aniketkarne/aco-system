@@ -17,7 +17,7 @@ echo "Note: Agents poll for stories in status order and process them"
 echo ""
 
 # Run all agents (blocks - use in a separate terminal or with & for background)
-python3 run_all_agents_final.py
+python3 run_agents.py
 
 echo ""
 echo "✓ ACO agents started!"

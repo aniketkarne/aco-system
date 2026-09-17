@@ -43,4 +43,5 @@ clean:
 	find . -type f -name "*.pyc" -delete
 
 db-reset:
-	rm -f data/aco.db && python -c "from core.database import init_db; init_db()"
+	@mkdir -p data
+	rm -f data/aco.db && python -c "from core.database import init_database; from config.settings import get_settings; init_database(get_settings().DATABASE_URL)"
