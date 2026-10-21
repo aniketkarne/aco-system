@@ -240,8 +240,10 @@ DATABASE_URL=postgresql://user:password@host:5432/aco
 REDIS_URL=redis://localhost:6379/0
 
 # Per-agent model override
-ACO-ARCHITECT_MODEL=anthropic/claude-opus-4-20250514
-ACO-DEV_MODEL=openai/gpt-4o
+# The value is used verbatim, so it must be a model ID your configured
+# provider accepts. Both ACO_ARCHITECT_MODEL and ACO-ARCHITECT-MODEL work.
+ACO-ARCHITECT_MODEL=claude-opus-5-5
+ACO-DEV_MODEL=claude-sonnet-5-5
 ```
 
 ---

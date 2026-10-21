@@ -5,6 +5,7 @@ Supports: OpenAI, Anthropic, X.AI (Grok), and Mock for testing
 import json
 import time
 import logging
+import re
 from typing import Optional, List, Dict, Any
 from abc import ABC, abstractmethod
 import httpx
@@ -46,13 +47,75 @@ def _prompt_summary(messages: List[Dict], max_chars: int = 800) -> str:
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------------
+# Model-capability helpers
+#
+# Provider APIs have tightened over time, and the old hardcoded model IDs in
+# this file were several generations stale. These helpers encode the current
+# rules so a payload never contains a parameter the target model rejects.
+# ---------------------------------------------------------------------------
+
+# OpenAI reasoning models: gpt-5+, gpt-6, and the o-series. They reject
+# temperature/top_p unless reasoning effort is "none", and they take
+# max_completion_tokens rather than max_tokens.
+_OPENAI_REASONING_MODEL_RE = re.compile(r"^(gpt-5|gpt-6|o1|o3|o4)")
+
+
+def _is_openai_reasoning_model(model: str) -> bool:
+    """True if the model is an OpenAI reasoning model."""
+    return bool(_OPENAI_REASONING_MODEL_RE.match((model or "").lower()))
+
+
+# Anthropic retired temperature/top_p/top_k on Claude 4.7 and later: sending
+# a non-default value returns HTTP 400. Model IDs look like
+# "claude-opus-5-5", "claude-sonnet-4-6", "claude-3-5-haiku-20241022".
+_ANTHROPIC_VERSION_RE = re.compile(r"^claude-(?:opus|sonnet|haiku|fable|mythos)-(\d+)(?:-(\d+))?")
+
+
+def _anthropic_rejects_sampling_params(model: str) -> bool:
+    """True if the Claude model rejects temperature/top_p/top_k.
+
+    Claude 4.7 and later (including the 5.x family) reject a non-default
+    sampling temperature with HTTP 400. Older models still accept it.
+    """
+    match = _ANTHROPIC_VERSION_RE.match((model or "").lower())
+    if not match:
+        return False
+
+    major = int(match.group(1))
+    minor = int(match.group(2)) if match.group(2) else 0
+
+    # 3.x and 4.0-4.6 accept temperature; 4.7+ does not.
+    return major >= 5 or (major == 4 and minor >= 7)
+
 
 class LLMClient(ABC):
-    """Base LLM client interface."""
+    """Base LLM client interface.
+
+    Every provider must accept the same keyword arguments, because
+    ``LoggingProxyLLMClient`` forwards ``model`` (and callers may pass
+    ``max_tokens``) to whatever client is wrapped. A provider that omits
+    ``**kwargs`` raises ``TypeError`` before the request is ever sent.
+    """
 
     @abstractmethod
-    def chat(self, messages: List[Dict], temperature: float = 0.7) -> str:
-        """Send chat messages and get response."""
+    def chat(
+        self,
+        messages: List[Dict],
+        temperature: float = 0.7,
+        model: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+        **kwargs,
+    ) -> str:
+        """Send chat messages and get response.
+
+        Args:
+            messages: Chat messages.
+            temperature: Sampling temperature. Providers that reject it
+                (current Anthropic/OpenAI reasoning models) ignore it.
+            model: Per-call model override. Falls back to the client default.
+            max_tokens: Output token cap. Falls back to the client default.
+        """
         pass
 
     @abstractmethod
@@ -68,7 +131,14 @@ class MockLLMClient(LLMClient):
         self.mock_responses = mock_responses or {}
         self.pm_questions_asked = False  # Track if PM asked questions
 
-    def chat(self, messages: List[Dict], temperature: float = 0.7) -> str:
+    def chat(
+        self,
+        messages: List[Dict],
+        temperature: float = 0.7,
+        model: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+        **kwargs,
+    ) -> str:
         """Generate mock responses based on conversation context."""
         user_msg = ""
         system_msg = ""
@@ -549,10 +619,17 @@ class LoggingProxyLLMClient(LLMClient):
         self._logger = _build_agent_logger()
         self._call_count = 0
 
-    def chat(self, messages: List[Dict], temperature: float = 0.7, **kwargs) -> str:
+    def chat(
+        self,
+        messages: List[Dict],
+        temperature: float = 0.7,
+        model: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+        **kwargs,
+    ) -> str:
         # Inject per-agent model if set and not overridden by caller
-        if self._agent_model and "model" not in kwargs:
-            kwargs["model"] = self._agent_model
+        if model is None and self._agent_model:
+            model = self._agent_model
         self._call_count += 1
         call_id = f"{self._agent_name}#{self._call_count}"
         prompt = _prompt_summary(messages)
@@ -560,7 +637,13 @@ class LoggingProxyLLMClient(LLMClient):
         self._logger.debug(f"\n{'='*60}\n--> [{call_id}] PROMPT\n{prompt}\n{'='*60}")
 
         start = time.time()
-        response = self._wrapped.chat(messages, temperature=temperature, **kwargs)
+        response = self._wrapped.chat(
+            messages,
+            temperature=temperature,
+            model=model,
+            max_tokens=max_tokens,
+            **kwargs,
+        )
         elapsed = time.time() - start
 
         # Log response — first 300 chars as preview, full at DEBUG
@@ -578,13 +661,21 @@ class LoggingProxyLLMClient(LLMClient):
 class XAIClient(LLMClient):
     """X.AI (Grok) client."""
 
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, model: str = "grok-4.7"):
         self.api_key = api_key
         self.base_url = "https://api.x.ai/v1"
-        self.model = "grok-beta"
+        # grok-beta is no longer published in the xAI model catalog.
+        self.model = model
         self.session = httpx.Client(timeout=60.0)
 
-    def chat(self, messages: List[Dict], temperature: float = 0.7) -> str:
+    def chat(
+        self,
+        messages: List[Dict],
+        temperature: float = 0.7,
+        model: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+        **kwargs,
+    ) -> str:
         """Send chat to X.AI Grok."""
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -593,10 +684,12 @@ class XAIClient(LLMClient):
 
         payload = {
             "messages": messages,
-            "model": self.model,
+            "model": model or self.model,
             "temperature": temperature,
             "stream": False,
         }
+        if max_tokens:
+            payload["max_tokens"] = max_tokens
 
         try:
             response = self.session.post(
@@ -619,24 +712,54 @@ class XAIClient(LLMClient):
 class OpenAIClient(LLMClient):
     """OpenAI client."""
 
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, model: str = "gpt-6.1-sol"):
         self.api_key = api_key
         self.base_url = "https://api.openai.com/v1"
-        self.model = "gpt-4-turbo-preview"
+        # gpt-4-turbo-preview is deprecated; gpt-6.1-sol is the current
+        # balanced-intelligence model in the gpt-6 family.
+        self.model = model
         self.session = httpx.Client(timeout=60.0)
 
-    def chat(self, messages: List[Dict], temperature: float = 0.7) -> str:
+    def chat(
+        self,
+        messages: List[Dict],
+        temperature: float = 0.7,
+        model: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+        **kwargs,
+    ) -> str:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
 
+        resolved_model = model or self.model
         payload = {
             "messages": messages,
-            "model": self.model,
-            "temperature": temperature,
+            "model": resolved_model,
             "stream": False,
         }
+
+        if _is_openai_reasoning_model(resolved_model):
+            # Reasoning models (gpt-5+, gpt-6, o-series) reject temperature
+            # and top_p unless the reasoning effort is "none", and they take
+            # max_completion_tokens instead of max_tokens.
+            #
+            # We do not force an effort: the caller's requested effort wins if
+            # given, otherwise the provider default applies. Note that some
+            # current models (e.g. gpt-6.1-sol) reject effort="none"
+            # outright, so sending it unasked would itself 400.
+            effort = kwargs.get("reasoning_effort")
+            if effort is not None:
+                payload["reasoning_effort"] = effort
+            if effort == "none":
+                payload["temperature"] = temperature
+            if max_tokens:
+                payload["max_completion_tokens"] = max_tokens
+        else:
+            payload["temperature"] = temperature
+            if max_tokens:
+                payload["max_tokens"] = max_tokens
 
         response = self.session.post(
             f"{self.base_url}/chat/completions",
@@ -654,13 +777,22 @@ class OpenAIClient(LLMClient):
 class AnthropicClient(LLMClient):
     """Anthropic Claude client."""
 
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, model: str = "claude-sonnet-5-5"):
         self.api_key = api_key
         self.base_url = "https://api.anthropic.com/v1"
-        self.model = "claude-3-sonnet-20240229"
+        # claude-3-sonnet-20240229 is retired; claude-sonnet-5-5 is the
+        # current general-purpose model.
+        self.model = model
         self.session = httpx.Client(timeout=60.0)
 
-    def chat(self, messages: List[Dict], temperature: float = 0.7) -> str:
+    def chat(
+        self,
+        messages: List[Dict],
+        temperature: float = 0.7,
+        model: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+        **kwargs,
+    ) -> str:
         # Anthropic uses different format
         system_message = ""
         chat_messages = []
@@ -677,12 +809,19 @@ class AnthropicClient(LLMClient):
             "anthropic-version": "2023-06-01",
         }
 
+        resolved_model = model or self.model
         payload = {
-            "model": self.model,
-            "max_tokens": 4096,
+            "model": resolved_model,
+            "max_tokens": max_tokens or get_settings().MAX_TOKENS,
             "system": system_message,
             "messages": chat_messages,
         }
+
+        # Claude 4.7+ (incl. the 5.x family) rejects temperature/top_p/top_k
+        # with a 400 unless the value is the default, so we only send
+        # temperature for older models that still accept it.
+        if not _anthropic_rejects_sampling_params(resolved_model):
+            payload["temperature"] = temperature
 
         response = self.session.post(
             f"{self.base_url}/messages",
@@ -700,23 +839,32 @@ class AnthropicClient(LLMClient):
 class MinimaxClient(LLMClient):
     """MiniMax client - OpenAI-compatible API via minimax.io."""
 
-    def __init__(self, api_key: str, model: str = "MiniMax-M2.7"):
+    def __init__(self, api_key: str, model: str = "MiniMax-M3"):
         self.api_key = api_key
         self.model = model
         self.base_url = "https://www.minimax.io/v1"
         self.session = httpx.Client(timeout=120.0)
 
-    def chat(self, messages: List[Dict], temperature: float = 0.7, max_tokens: int = 4096, **kwargs) -> str:
+    def chat(
+        self,
+        messages: List[Dict],
+        temperature: float = 0.7,
+        model: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+        **kwargs,
+    ) -> str:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
 
         payload = {
-            "model": kwargs.get("model", self.model),
+            "model": model or self.model,
             "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
+            # MiniMax-M3 / M3.1-Flash always use temperature 1 and ignore the
+            # parameter; sending it is a no-op rather than an error, but
+            # top_p must stay in (0, 1] when sent.
+            "max_completion_tokens": max_tokens or get_settings().MAX_TOKENS,
         }
 
         response = self.session.post(
@@ -739,7 +887,7 @@ class MinimaxClient(LLMClient):
 class OpenRouterClient(LLMClient):
     """OpenRouter client - unified API for multiple LLM providers."""
 
-    def __init__(self, api_key: str, model: str = "openai/gpt-3.5-turbo",
+    def __init__(self, api_key: str, model: str = "minimax/minimax-m3",
                  referer: str = "https://github.com/aco-system/aco-system",
                  title: str = "ACO System"):
         self.api_key = api_key
@@ -749,7 +897,14 @@ class OpenRouterClient(LLMClient):
         self.referer = referer
         self.title = title
 
-    def chat(self, messages: List[Dict], temperature: float = 0.7, max_tokens: int = 4096, **kwargs) -> str:
+    def chat(
+        self,
+        messages: List[Dict],
+        temperature: float = 0.7,
+        model: Optional[str] = None,
+        max_tokens: Optional[int] = None,
+        **kwargs,
+    ) -> str:
         """Send chat messages via OpenRouter."""
         headers = {
             "Authorization": f"Bearer {self.api_key}",
@@ -759,10 +914,9 @@ class OpenRouterClient(LLMClient):
         }
 
         payload = {
-            "model": kwargs.get("model", self.model),
+            "model": model or self.model,
             "messages": messages,
-            "temperature": temperature,
-            "max_tokens": max_tokens,
+            "max_tokens": max_tokens or get_settings().MAX_TOKENS,
         }
 
         response = self.session.post(
@@ -793,17 +947,17 @@ def get_llm_client() -> LLMClient:
     if settings.LLM_PROVIDER == "xai":
         if not settings.XAI_API_KEY:
             raise ValueError("XAI_API_KEY not configured")
-        return XAIClient(settings.XAI_API_KEY)
+        return XAIClient(settings.XAI_API_KEY, settings.XAI_MODEL)
 
     elif settings.LLM_PROVIDER == "openai":
         if not settings.OPENAI_API_KEY:
             raise ValueError("OPENAI_API_KEY not configured")
-        return OpenAIClient(settings.OPENAI_API_KEY)
+        return OpenAIClient(settings.OPENAI_API_KEY, settings.OPENAI_MODEL)
 
     elif settings.LLM_PROVIDER == "anthropic":
         if not settings.ANTHROPIC_API_KEY:
             raise ValueError("ANTHROPIC_API_KEY not configured")
-        return AnthropicClient(settings.ANTHROPIC_API_KEY)
+        return AnthropicClient(settings.ANTHROPIC_API_KEY, settings.ANTHROPIC_MODEL)
 
     elif settings.LLM_PROVIDER == "openrouter":
         if not settings.OPENROUTER_API_KEY:
@@ -839,16 +993,28 @@ def get_client(agent_name: str = None) -> LLMClient:
     agent_model = None
     if agent_name:
         try:
-            from core.prompt_loader import get_agent_model
-            agent_model = get_agent_model(agent_name)
+            from core.prompt_loader import (
+                get_agent_model,
+                get_agent_model_override,
+                resolve_agent_name,
+            )
+            resolved_name = resolve_agent_name(agent_name)
+
+            # An explicit per-agent override (ACO_*_MODEL) is deliberate, so
+            # it is honoured for any provider.
+            agent_model = get_agent_model_override(resolved_name)
+
+            if agent_model is None:
+                # The shared tiers (MODEL_OPU / MODEL_SONNET / MODEL_HAIKU)
+                # are Anthropic model IDs. Injecting them into another
+                # provider would send a model that provider does not know,
+                # so only Anthropic uses them; every other provider falls
+                # back to its own configured default model.
+                from config.settings import get_settings
+                if get_settings().LLM_PROVIDER == "anthropic":
+                    agent_model = get_agent_model(agent_name)
+
             if agent_model == "none":
-                agent_model = None
-            # When using minimax, skip model overrides —
-            # get_agent_model() returns Claude/OpenAI model names
-            # (e.g. claude-opus-4-20250514) which MiniMax doesn't support.
-            # MiniMax uses MINIMAX_MODEL for all agents.
-            from config.settings import get_settings
-            if get_settings().LLM_PROVIDER == "minimax":
                 agent_model = None
         except Exception:
             agent_model = None  # Fallback if prompt_loader fails

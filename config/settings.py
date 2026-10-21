@@ -4,8 +4,8 @@ Loads from environment variables and .env file.
 """
 import os
 from pathlib import Path
-from pydantic_settings import BaseSettings
-from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import AliasChoices, Field
 
 
 class Settings(BaseSettings):
@@ -20,14 +20,29 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: str | None = Field(None, description="Anthropic API key")
     XAI_API_KEY: str | None = Field(None, description="X.AI API key")
     OPENROUTER_API_KEY: str | None = Field(None, description="OpenRouter API key")
-    OPENROUTER_MODEL: str = Field("minimax/minimax-m2.5", description="OpenRouter model to use (e.g., minimax/minimax-m2.5)")
     MINIMAX_API_KEY: str | None = Field(None, description="MiniMax API key")
-    MINIMAX_MODEL: str = Field("MiniMax-M2.7", description="MiniMax model to use")
 
-    # LLM Model Mappings (Current models as of 2025)
-    MODEL_OPU: str = Field("claude-opus-4-20250514", description="Opus model for complex reasoning")
-    MODEL_SONNET: str = Field("claude-sonnet-4-20250514", description="Sonnet model for implementation")
-    MODEL_HAIKU: str = Field("claude-haiku-4-20250514", description="Haiku model for status updates")
+    # Per-provider model IDs.
+    # ANTHROPIC_MODEL / OPENAI_MODEL / XAI_MODEL are bare provider IDs
+    # (e.g. "claude-sonnet-5-5") because they are sent straight to that
+    # provider's API. OPENROUTER_MODEL and MINIMAX_MODEL are sent to
+    # OpenRouter / MiniMax, which use their own ID spellings.
+    ANTHROPIC_MODEL: str = Field("claude-sonnet-5-5", description="Anthropic model for the default agent tier")
+    OPENAI_MODEL: str = Field("gpt-6.1-sol", description="OpenAI model for the default agent tier")
+    XAI_MODEL: str = Field("grok-4.7", description="xAI model for the default agent tier")
+    OPENROUTER_MODEL: str = Field("minimax/minimax-m3", description="OpenRouter model to use (e.g., minimax/minimax-m3)")
+    MINIMAX_MODEL: str = Field("MiniMax-M3", description="MiniMax model to use")
+
+    # Output token cap sent to providers that require or benefit from one.
+    # Kept generous because current reasoning models spend part of this budget
+    # on thinking tokens; a small cap truncates the visible answer to empty.
+    MAX_TOKENS: int = Field(16384, description="Default output token cap per request")
+
+    # LLM Model Mappings (Anthropic model IDs, current as of 2026-10).
+    # These are the tier defaults used when LLM_PROVIDER=anthropic.
+    MODEL_OPU: str = Field("claude-opus-5-5", description="Opus model for complex reasoning")
+    MODEL_SONNET: str = Field("claude-sonnet-5-5", description="Sonnet model for implementation")
+    MODEL_HAIKU: str = Field("claude-haiku-5-5", description="Haiku model for status updates")
 
     # Agent Model Assignments
     AGENT_MODELS: dict = Field(
@@ -40,6 +55,41 @@ class Settings(BaseSettings):
             "aco-human": "none",  # No LLM needed for human reviewer
         },
         description="Which model each agent uses (maps to MODEL_* keys or 'none')"
+    )
+
+    # Per-agent model overrides. These win over AGENT_MODELS and are used
+    # verbatim, so the value must be a model ID the configured provider
+    # accepts. Both the underscore and hyphen spellings are accepted because
+    # the hyphen form is what .env.example documents.
+    ACO_PM_MODEL: str | None = Field(
+        None,
+        validation_alias=AliasChoices("ACO_PM_MODEL", "ACO-PM-MODEL"),
+        description="Override model for aco-pm (e.g., claude-sonnet-5-5)",
+    )
+    ACO_PLANNER_MODEL: str | None = Field(
+        None,
+        validation_alias=AliasChoices("ACO_PLANNER_MODEL", "ACO-PLANNER-MODEL"),
+        description="Override model for aco-planner",
+    )
+    ACO_ARCHITECT_MODEL: str | None = Field(
+        None,
+        validation_alias=AliasChoices("ACO_ARCHITECT_MODEL", "ACO-ARCHITECT-MODEL"),
+        description="Override model for aco-architect",
+    )
+    ACO_DEV_MODEL: str | None = Field(
+        None,
+        validation_alias=AliasChoices("ACO_DEV_MODEL", "ACO-DEV-MODEL"),
+        description="Override model for aco-dev",
+    )
+    ACO_QA_MODEL: str | None = Field(
+        None,
+        validation_alias=AliasChoices("ACO_QA_MODEL", "ACO-QA-MODEL"),
+        description="Override model for aco-qa",
+    )
+    ACO_HUMAN_MODEL: str | None = Field(
+        None,
+        validation_alias=AliasChoices("ACO_HUMAN_MODEL", "ACO-HUMAN-MODEL", "ACO_HUMAN"),
+        description="Override model for aco-human ('none' to disable the LLM for this agent)",
     )
     
     # Database
@@ -69,11 +119,13 @@ class Settings(BaseSettings):
     HUMAN_CONTACT_METHOD: str = Field("whatsapp", description="How to contact human")
     HUMAN_PHONE: str = Field("+1234567890", description="Human's phone number")
     
-    class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        extra = "ignore"
-        case_sensitive = True
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+        case_sensitive=True,
+        populate_by_name=True,
+    )
 
 
 # Global settings instance

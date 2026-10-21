@@ -147,17 +147,25 @@ def get_agent_model(agent_name: str) -> Optional[str]:
     """
     Get the model name configured for an agent.
 
+    Resolution order:
+    1. Explicit per-agent override (ACO_<AGENT>_MODEL env var), if set.
+    2. The shared tier default from AGENT_MODELS (MODEL_OPU / MODEL_SONNET /
+       MODEL_HAIKU).
+
     Args:
         agent_name: Name of the agent
 
     Returns:
-        Model name string (e.g., "claude-opus-4-20250514") or "none"
+        Model name string (e.g., "claude-sonnet-5-5") or "none"
 
     Raises:
         PromptLoadError: If agent file not found
     """
-    # Resolve shorthand names
     resolved_name = resolve_agent_name(agent_name)
+
+    override = get_agent_model_override(resolved_name)
+    if override is not None:
+        return override
 
     # Check settings for model assignment
     settings = get_settings()
@@ -170,6 +178,34 @@ def get_agent_model(agent_name: str) -> Optional[str]:
     # Get actual model name from settings
     model_name = getattr(settings, model_key, model_key)
     return model_name
+
+
+def get_agent_model_override(resolved_name: str) -> Optional[str]:
+    """
+    Get the explicit per-agent model override from the environment.
+
+    The .env.example documents these as ACO-PM_MODEL, ACO-ARCHITECT_MODEL and
+    so on. Both the hyphenated and underscored spellings are accepted, and
+    the value is used verbatim, so it must be a model ID the configured
+    provider accepts.
+
+    Args:
+        resolved_name: Fully-qualified agent name (e.g. "aco-architect")
+
+    Returns:
+        The override value, "none" to disable the LLM for the agent, or None
+        when no override is configured.
+    """
+    suffix = resolved_name.removeprefix("aco-").upper().replace("-", "_")
+    field = f"ACO_{suffix}_MODEL"
+
+    settings = get_settings()
+    value = getattr(settings, field, None)
+    if value is None:
+        return None
+
+    value = str(value).strip()
+    return value or None
 
 
 def validate_agent_prompt(agent_name: str) -> Dict:
